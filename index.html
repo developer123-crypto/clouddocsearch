@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CloudDocSearch</title>
+<style>
+  :root { --ink:#16202a; --mute:#5b6773; --line:#d5dce3; --bg:#f5f7f9; --card:#fff; --accent:#0b6e6e; --bad:#b3261e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.55 "Segoe UI", system-ui, sans-serif; color:var(--ink); background:var(--bg); }
+  header { padding:28px 20px 0; max-width:760px; margin:0 auto; }
+  h1 { margin:0 0 4px; font-size:1.9rem; letter-spacing:-.02em; }
+  header p { margin:0 0 18px; color:var(--mute); }
+  nav { display:flex; gap:4px; border-bottom:1px solid var(--line); }
+  nav button { border:0; background:none; padding:10px 16px; font:inherit; color:var(--mute); cursor:pointer; border-bottom:3px solid transparent; }
+  nav button[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--accent); font-weight:600; }
+  main { max-width:760px; margin:0 auto; padding:22px 20px 60px; }
+  section[hidden] { display:none; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  input[type=text], input[type=file] { flex:1; min-width:200px; padding:10px 12px; font:inherit; border:1px solid var(--line); border-radius:6px; background:var(--card); }
+  button.go { padding:10px 18px; font:inherit; font-weight:600; color:#fff; background:var(--accent); border:0; border-radius:6px; cursor:pointer; }
+  button.del { padding:4px 10px; font:inherit; color:var(--bad); background:none; border:1px solid var(--bad); border-radius:6px; cursor:pointer; }
+  button:focus-visible, input:focus-visible { outline:3px solid #7fc4c4; outline-offset:2px; }
+  .msg { margin:14px 0; color:var(--mute); }
+  .msg.err { color:var(--bad); }
+  .hit { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:12px 0; }
+  .hit b { display:block; } .hit small { color:var(--mute); } .hit p { margin:6px 0 0; }
+  table { width:100%; border-collapse:collapse; background:var(--card); }
+  th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); font-size:.95rem; }
+  .st-indexed { color:var(--accent); font-weight:600; } .st-failed { color:var(--bad); font-weight:600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CloudDocSearch</h1>
+  <p>Upload a .txt or PDF, then search the words inside it.</p>
+  <nav role="tablist">
+    <button role="tab" aria-selected="true" data-tab="search">Search</button>
+    <button role="tab" aria-selected="false" data-tab="upload">Upload</button>
+    <button role="tab" aria-selected="false" data-tab="docs">Documents</button>
+  </nav>
+</header>
+<main>
+  <section id="search">
+    <div class="row"><input type="text" id="q" placeholder="e.g. cloud storage" maxlength="200" aria-label="Search words"><button class="go" id="searchBtn">Search</button></div>
+    <div class="msg" id="searchMsg"></div><div id="results"></div>
+  </section>
+  <section id="upload" hidden>
+    <div class="row"><input type="file" id="file" accept=".txt,.pdf" aria-label="Choose a file"><button class="go" id="uploadBtn">Upload</button></div>
+    <div class="msg" id="uploadMsg"></div>
+  </section>
+  <section id="docs" hidden>
+    <div class="msg" id="docsMsg"></div>
+    <table id="docsTable" hidden><thead><tr><th>File</th><th>Status</th><th>Words</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<script>
+// ===== CHANGE THESE TWO LINES (values come from Member B) =====
+const API = " https://6gz3t4cmw7.execute-api.ap-southeast-2.amazonaws.com";
+const API_KEY = "   cds-2026-hze-project-07";
+// ==============================================================
+const MAX_MB = 10;
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function api(path, options = {}) {
+  const res = await fetch(API + path, { ...options, headers: { "x-api-key": API_KEY } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Request failed (" + res.status + ")");
+  return data;
+}
+function say(id, text, isError) { const e = $(id); e.textContent = text; e.className = "msg" + (isError ? " err" : ""); }
+function make(tag, text, cls) { const e = document.createElement(tag); e.textContent = text; if (cls) e.className = cls; return e; }
+
+// ----- tabs -----
+document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("nav button").forEach((x) => x.setAttribute("aria-selected", x === b));
+  ["search", "upload", "docs"].forEach((s) => ($(s).hidden = s !== b.dataset.tab));
+  if (b.dataset.tab === "docs") loadDocs();
+}));
+
+// ----- search (text is inserted with textContent, never innerHTML, so file contents cannot run scripts) -----
+async function search() {
+  const q = $("q").value.trim();
+  $("results").replaceChildren();
+  if (!q) return say("searchMsg", "Type one or more words to search.", true);
+  say("searchMsg", "Searching...");
+  try {
+    const data = await api("/search?q=" + encodeURIComponent(q));
+    if (!data.results.length) return say("searchMsg", data.note || "No document contains all of those words.");
+    say("searchMsg", data.results.length + " document(s) found, best match first.");
+    data.results.forEach((r) => {
+      const card = make("div", "", "hit");
+      card.append(make("b", r.file_name), make("small", "Matches: " + r.score), make("p", "..." + r.snippet + "..."));
+      $("results").append(card);
+    });
+  } catch (e) { say("searchMsg", e.message, true); }
+}
+$("searchBtn").addEventListener("click", search);
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+
+// ----- upload -----
+async function upload() {
+  const f = $("file").files[0];
+  if (!f) return say("uploadMsg", "Choose a .txt or PDF file first.", true);
+  if (!/\.(txt|pdf)$/i.test(f.name)) return say("uploadMsg", "Only .txt and .pdf files are allowed.", true);
+  if (f.size > MAX_MB * 1024 * 1024) return say("uploadMsg", "File is larger than " + MAX_MB + " MB.", true);
+  try {
+    say("uploadMsg", "Getting a secure upload link...");
+    const link = await api("/upload-url?file_name=" + encodeURIComponent(f.name));
+    say("uploadMsg", "Uploading...");
+    const put = await fetch(link.upload_url, { method: "PUT", headers: { "Content-Type": link.content_type }, body: f });
+    if (!put.ok) throw new Error("Upload to storage failed (" + put.status + ")");
+    for (let i = 0; i < 40; i++) {            // wait up to ~80 seconds for indexing
+      await sleep(2000);
+      const { documents } = await api("/documents");
+      const d = documents.find((x) => x.doc_id === link.doc_id);
+      if (d && d.status === "indexed") return say("uploadMsg", "Done: " + (d.unique_words || 0) + " unique words indexed. You can search now.");
+      if (d && d.status === "failed") return say("uploadMsg", "Could not index this file: " + (d.error || "unknown error"), true);
+      say("uploadMsg", "Processing (" + (d ? d.status : "waiting") + ")...");
+    }
+    say("uploadMsg", "Still processing. Check the Documents tab in a minute.");
+  } catch (e) { say("uploadMsg", e.message, true); }
+}
+$("uploadBtn").addEventListener("click", upload);
+
+// ----- documents -----
+async function loadDocs() {
+  const body = $("docsTable").tBodies[0];
+  say("docsMsg", "Loading...");
+  try {
+    const { documents } = await api("/documents");
+    body.replaceChildren();
+    $("docsTable").hidden = !documents.length;
+    say("docsMsg", documents.length ? "" : "No documents yet. Upload one to get started.");
+    documents.forEach((d) => {
+      const tr = document.createElement("tr");
+      const del = make("button", "Delete", "del");
+      del.addEventListener("click", async () => {
+        if (!confirm("Delete " + d.file_name + " and its search entries?")) return;
+        try { await api("/documents/" + encodeURIComponent(d.doc_id), { method: "DELETE" }); loadDocs(); }
+        catch (e) { say("docsMsg", e.message, true); }
+      });
+      const cells = [make("td", d.file_name), make("td", d.status, "st-" + d.status), make("td", d.word_count || "-"), document.createElement("td")];
+      cells[3].append(del);
+      tr.append(...cells);
+      body.append(tr);
+    });
+  } catch (e) { say("docsMsg", e.message, true); }
+}
+</script>
+</body>
+</html>
